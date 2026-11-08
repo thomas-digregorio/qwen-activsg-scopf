@@ -1,0 +1,10 @@
+# DC N-1 SCOPF dependencies (Python 3.13 tested)
+numpy>=2.2
+scipy>=1.16
+highspy>=1.15
+
+# Only needed to re-parse ACTIVSg500.RAW from scratch (vg_extract.py).
+# The pre-parsed activsg500/vg_data.json is included, so the driver,
+# tests, and verification all run with just the three packages above.
+# VeraGridEngine (6.7.5) is the in-house grid-modeling package;
+# see the dataset page for provenance.
