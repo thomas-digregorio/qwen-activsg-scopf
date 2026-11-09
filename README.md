@@ -1,4 +1,4 @@
-# OPF-scratch — DC N-1 OPF: IEEE 14-bus and ACTIVSg500
+# OPF-scratch — DC N-1 OPF: IEEE 14-bus, ACTIVSg500, ACTIVSg25k
 
 Scratch workspace for power-system OPF work. All data public-domain,
 all computation local (Python 3.13 + numpy/scipy, HiGHS 1.15.1 via
@@ -22,6 +22,10 @@ all computation local (Python 3.13 + numpy/scipy, HiGHS 1.15.1 via
 | `activsg500/` | dataset + generated JSON + `results_activsg500.md` report |
 | `activsg500_dataset.zip` | TAMU ACTIVSg500 dataset (RAW, MATPOWER case, contab) |
 | `download_activsg500.ps1` | one-shot download script for the dataset |
+| `activsg25k_n1_screen.py` | ACTIVSg25k: DC N-0 OPF + exact N-1 security screen (HiGHS + Sherman–Morrison) |
+| `verify_activsg25k.py` | ACTIVSg25k: independent re-verification (re-solves + data re-summation) |
+| `download_activsg25k.ps1` | one-shot download script for the 25k dataset |
+| `activsg25k/` | dataset (RAW, MATPOWER case, generated JSON) + `results_activsg25k.md` report |
 
 Run:
 
@@ -192,3 +196,94 @@ rest on independent checks:
 - **Infeasibility proof** — the joint line+gen set is proven infeasible by
   HiGHS and confirmed by a second, independent HiGHS call; per-outage testing
   isolates the cause to exactly the two largest generators (bus 9, bus 17).
+
+## ACTIVSg25k (TAMU 25,000-bus test case)
+
+DC N-0 OPF + an exact **N-1 security screen** on the public synthetic
+ACTIVSg25k (electricgrids.engr.tamu.edu; same provenance/citations as the
+500-bus case above — Birchfield et al. 2017, Xu et al. HICSS 2017). At this
+scale a full N-1 SCOPF (all 32,229 branch outages as explicit constraints,
+~64k×104k LP) is intractable, so the driver solves the N-0 OPF exactly and
+then screens every single outage *at the N-0 dispatch*:
+
+- **non-bridge outages (21,290)** — post-contingency angles via a
+  Sherman–Morrison rank-1 update of the reduced-Laplacian solve
+  (`θ′ = θ₀ + b(d̃ᵀθ₀)/(1 − b d̃ᵀw)·w`, `w = B̃⁻¹d̃`), exact to ~1e-6 MW
+  (verified in-run against direct re-solves); flows are batched
+  (256 outages/batch) through the branch incidence matrix;
+- **bridge outages (10,939 = 33.9% of branches)** — islanding: the
+  slack-side component is re-factorized and its limits swept under the
+  frozen N-0 dispatch; the island side is characterized by load / frozen
+  gen / ΣPmax / ΣPmin (shortfall = load − ΣPmax) plus an internal flow
+  sweep (island re-rooted at the cut endpoint);
+- **gen outages (3,779)** — labeled diagnostic,
+  `F′ = F₀ − P_g·b(w_f − w_t)` batched per gen bus; the 6 slack-bus units
+  re-root the network at the largest other gen bus.
+
+Network from `ACTIVSg25k.RAW` via the **VeraGridEngine** RAW parser, with the
+750 three-winding transformers expanded to 3-branch stars (synthetic stub
+buses `10⁶+k`) → **25,000 buses / 32,229 in-service branches** (24,699 lines
++ 5,280 2-winding xfmr + 2,250 star legs); 1 out-of-service line excluded;
+8,899 zero-rated branches are unconstrained. Costs/limits from the official
+MATPOWER case (3,779 online units on 2,753 buses); total load
+**234,527.57 MW**; 100 MVA base. Slack = MP reference bus 62120.
+
+### Data pipeline
+
+```
+powershell download_activsg25k.ps1   # RAW + MATPOWER case (TAMU)
+python vg_extract.py --dir activsg25k --stem ACTIVSg25k    # RAW  -> vg_data.json
+python mp_extract.py --dir activsg25k --stem case_ACTIVSg25k  # case -> mp_data.json
+python crosscheck.py --dir activsg25k                     # 0 mismatches (incl. star-stub rows)
+```
+
+`crosscheck.py` matches every star stub back to its 3-winding transformer
+(750/750) and verifies star impedances/ratings/angles, all branch
+impedances/ratings (RAW `RATEA` is in **MW**), and per-bus unit counts — 0
+mismatches. Note: the RAW and MP files are **different-time snapshots**
+(Vm/Va differ on ~18k buses; MP snapshot gen does not balance RAW load:
++5,160.93 MW). Network topology/impedances come from RAW; costs, limits,
+unit status from the official MP case.
+
+### Run
+
+```
+python activsg25k_n1_screen.py   # full run, ~6 min (N-0 LP 6.5 s, SM screen
+                                 # 58 s, bridge screen 294 s, gen screen 7 s)
+python verify_activsg25k.py      # independent re-verification
+```
+
+### Headline results (2026-11-09, `activsg25k/results_activsg25k.md`)
+
+- **N-0: exact $5,856,237.3/h** (20-segment PL $5,856,238.7/h — chord of
+  the convex cost is an upper bound, gap $1.4/h; avg ≈ $25/MWh). Balanced
+  (gen = load to 1e-6 MW), **0 base-case limit violations** (worst ratio
+  0.9294). The snapshot dispatch costs $6,027,935/h — the OPF saves
+  ~$171.7k/h (2.8%).
+- **LMPs uniform at $30.028/MWh** (no binding limit in N-0) — duals equal
+  ±1 MW central finite differences at all 8 sampled buses.
+- **Line screen: 477 of 21,290 non-bridge outages (2.24%) violate limits**
+  at the N-0 dispatch; worst ratio **12.3311** (outage 53794-53801 drives a
+  75 MW transformer line to ~925 MW; 20 lines violated in that outage).
+- **Bridges: 357 of 10,939 islanding outages** leave an island whose load
+  exceeds local ΣPmax (max shortfall **77.2 MW**); 1,315 have internal
+  limit violations under the frozen dispatch (island or slack side).
+- **Gen outages (diagnostic): 1 of 3,779** violates (ratio 1.0239).
+- 1,483 zero-cost must-run units (ΣPmin 7,982.5 MW): the LP is
+  cost-indifferent over their ranges — HiGHS's optimum sits all of them at
+  Pmax (dispatch degeneracy, no cost effect).
+
+### How the results are verified
+
+- **In-run:** N-0 assertions (nodal balance, gen=load, generator limits,
+  0 base-case violations); SM self-test on 3 random non-bridge outages vs
+  direct re-factor + re-solve (≤ 7.6e-7 MW); FD LMPs vs duals.
+- **`verify_activsg25k.py` (independent process):** re-solves N-0 from
+  scratch (balance 8.4e-7 MW, 0 violations, exact $5,856,237.32/h with
+  PL ≥ exact by +$1.41/h); re-solves the **top-5 worst line outages
+  directly** (ratios and worst-line identity match the SM screen to 1e-6);
+  re-sums island load from RAW load blocks, island ΣPmax from the MP case,
+  and frozen gen from the re-solved dispatch (all agree); direct re-solve
+  of the top gen outages.
+- **Data:** `crosscheck.py` (0 mismatches RAW↔MP, incl. all 750 star
+  stubs); per-bus unit counts RAW vs MP agree exactly.

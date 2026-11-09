@@ -1,13 +1,26 @@
-"""Extract all arrays from case_ACTIVSg500.m (TAMU's official MATPOWER
-representation) into JSON + print OPF-relevant summaries."""
+"""Extract all arrays from a TAMU ACTIVSg MATPOWER case file into JSON +
+print OPF-relevant summaries.
+
+Usage:  python mp_extract.py [--dir DIR] [--stem STEM]
+  --dir   data directory (default: activsg500)
+  --stem  case filename without extension (default: case_ACTIVSg500)
+A contab file (contab_<name>.m, where name = stem minus "case_") is used if
+present, otherwise mpc.contab is recorded as null.
+"""
+import argparse
 import json
 import re
 from pathlib import Path
 
+ap = argparse.ArgumentParser()
+ap.add_argument("--dir", default="activsg500")
+ap.add_argument("--stem", default="case_ACTIVSg500")
+args = ap.parse_args()
+
 HERE = Path(__file__).resolve().parent
-MP = HERE / "activsg500" / "case_ACTIVSg500.m"
-CT = HERE / "activsg500" / "contab_ACTIVSg500.m"
-OUT = HERE / "activsg500" / "mp_data.json"
+MP = HERE / args.dir / (args.stem + ".m")
+OUT = HERE / args.dir / "mp_data.json"
+CT = HERE / args.dir / ("contab_" + args.stem[len("case_"):] + ".m")
 
 text = MP.read_text(errors="ignore")
 
@@ -31,8 +44,14 @@ branch = matp_array("mpc.branch", text)
 gencost = matp_array("mpc.gencost", text)
 baseMVA = float(re.search(r"mpc\.baseMVA\s*=\s*([\d.]+)", text).group(1))
 
-ct_text = CT.read_text(errors="ignore")
-contab = matp_array("mpc.contab", ct_text)
+if CT.exists():
+    ct_text = CT.read_text(errors="ignore")
+    contab = matp_array("mpc.contab", ct_text)
+    print(f"contab file found: {CT.name}")
+else:
+    contab = None
+    print(f"no contab file at {CT} -> contab = null "
+          f"(N-1 set defaults to all branches)")
 
 data = {
     "baseMVA": baseMVA,
@@ -55,6 +74,16 @@ print(f"total load Pd: {total_load:.2f} MW | total initial Pg: {total_pg:.2f} | 
 # status / online units
 on = [r for r in gen if r[7] == 1]
 print(f"gen status=1: {len(on)}  (status values: {sorted(set(r[7] for r in gen))})")
+
+# bus types: MATPOWER col 1: 1=PQ, 2=PV, 3=ref(slack)
+from collections import Counter
+bt = Counter(int(r[1]) for r in bus)
+refbuses = [int(r[0]) for r in bus if int(r[1]) == 3]
+print(f"bus types: {dict(sorted(bt.items()))}  ref buses: {refbuses}")
+c6 = sorted(set(int(r[6]) for r in bus))
+c10 = sorted(set(int(r[10]) for r in bus))
+print(f"col6 distinct: {len(c6)} -> {c6 if len(c6) <= 20 else str(c6[:10]) + ' ...'}")
+print(f"col10 distinct: {len(c10)} -> {c10 if len(c10) <= 20 else str(c10[:10]) + ' ...'}")
 
 # units with zero gencost: what are their Pmax/Pmin/status?
 print("\nzero-gencost units (bus, status, Pmin, Pmax):")

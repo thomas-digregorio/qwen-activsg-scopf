@@ -1,5 +1,9 @@
-"""Parse ACTIVSg500.RAW through VeraGridEngine's RAW parser and dump the
-network data to JSON.
+"""Parse a TAMU ACTIVSg .RAW through VeraGridEngine's RAW parser and dump
+the network data to JSON.
+
+Usage:  python vg_extract.py [--dir DIR] [--stem STEM]
+  --dir   data directory (default: activsg500)
+  --stem  RAW filename without extension (default: ACTIVSg500)
 
 v33 object attribute map (verified by introspection):
   branch:      I, J, CKT, R, X, B, RATEA, ST, MET
@@ -9,14 +13,20 @@ v33 object attribute map (verified by introspection):
   load:        I, ID, PL, QL, STATUS
   bus:         I, NAME, BASKV, AREA, ZONE, OWNER, VM, VA, BL, GL, EVHI, EVLO
 """
+import argparse
 import json
 from pathlib import Path
 
 from VeraGridEngine.IO.raw.raw_parser_writer import read_raw
 
+ap = argparse.ArgumentParser()
+ap.add_argument("--dir", default="activsg500")
+ap.add_argument("--stem", default="ACTIVSg500")
+args = ap.parse_args()
+
 HERE = Path(__file__).resolve().parent
-RAW = HERE / "activsg500" / "ACTIVSg500.RAW"
-OUT = HERE / "activsg500" / "vg_data.json"
+RAW = HERE / args.dir / (args.stem + ".RAW")
+OUT = HERE / args.dir / "vg_data.json"
 
 log = read_raw(str(RAW))
 c = log.result if hasattr(log, "result") else log
@@ -36,9 +46,14 @@ for t in c.transformers:
         "I": t.I, "J": t.J, "K": t.K, "CKT": t.CKT,
         "R": t.R1_2 + t.R2_3,          # 2-winding equivalent series R
         "X": t.X1_2 + t.X2_3,          # 2-winding equivalent series X
-        "ANG1": t.ANG1, "ANSTAR": t.ANSTAR,
-        "STAT": t.STAT, "RATEA": t.RATA1,
-        "NOMV1": t.NOMV1, "NOMV2": t.NOMV2,
+        "R1_2": t.R1_2 or 0.0, "X1_2": t.X1_2 or 0.0,
+        "R2_3": t.R2_3 or 0.0, "X2_3": t.X2_3 or 0.0,
+        "R3_1": t.R3_1 or 0.0, "X3_1": t.X3_1 or 0.0,
+        "ANG1": t.ANG1 or 0.0, "ANG2": t.ANG2 or 0.0, "ANG3": t.ANG3 or 0.0,
+        "ANSTAR": t.ANSTAR or 0.0,
+        "STAT": t.STAT, "RATEA": t.RATA1 or 0.0,
+        "RATA1": t.RATA1 or 0.0, "RATA2": t.RATA2 or 0.0, "RATA3": t.RATA3 or 0.0,
+        "NOMV1": t.NOMV1, "NOMV2": t.NOMV2, "NOMV3": t.NOMV3,
     })
 
 generators = [{k: getattr(g, k) for k in
@@ -56,6 +71,8 @@ print(f"wrote {OUT} ({OUT.stat().st_size} bytes)")
 
 print(f"\ncounts: buses {len(buses)}  branches {len(branches)}  transformers {len(transformers)}  "
       f"generators {len(generators)}  loads {len(loads)}")
+n3w = sum(1 for t in transformers if t["K"] not in (0, 0.0, None))
+print(f"transformers: 2-winding {len(transformers)-n3w}  3-winding {n3w}  | STAT!=1: {sum(1 for t in transformers if t['STAT'] != 1)}")
 bad_x = [t for t in transformers if abs(t["X"]) < 1e-12]
 print(f"transformers with X==0: {len(bad_x)}  | STAT!=1: {sum(1 for t in transformers if t['STAT'] != 1)}")
 print(f"branch ST values: {sorted(set(b['ST'] for b in branches))}")
